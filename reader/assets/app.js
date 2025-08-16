@@ -101,11 +101,11 @@ function viewHome(){
   setBookPill(null);
   setHTML(app, `
     <section class="card pad">
-      <h1>Welkom 👋</h1>
-      <p class="muted">Hey liefje, op deze app kan jij de door mij geschreven boeken lezen speciaal voor jou.</p>
+      <h1>Hey my love 🌹</h1>
+      <p class="muted">Hey baby, I wrote this app specially for you. You told me you liked dark romance, so I will write them for you.</p>
       <div class="grid">
         <div class="grid" style="grid-template-columns:1fr 1fr; gap:8px">
-          <a class="btn" href="#/books">📚 Boeken</a>
+          <a class="btn" href="#/books">📚 Books</a>
           <a class="btn" href="#/goto">➜ Go-to</a>
         </div>
         <button class="btn" id="openLastBtn">Open laatst gelezen</button>
@@ -226,10 +226,10 @@ async function viewBooks(){
   setBookPill(null);
   setHTML(app, `
     <section class="card pad">
-      <h1>Boeken</h1>
-      <p class="muted">Gelezen uit <code>/books.json</code>. Tik op een boek om hoofdstukken te tonen.</p>
+      <h1>Books</h1>
+      <p class="muted">Path: <code>/books.json</code>. Click to open a book</p>
       <div id="booksZone" class="grid" style="gap:10px">
-        <div class="status"><span class="loader"></span> Boeken laden…</div>
+        <div class="status"><span class="loader"></span> Loading books...</div>
       </div>
     </section>
   `);
@@ -403,7 +403,7 @@ $('#copyLinkBtn')?.addEventListener('click', async ()=>{
     await navigator.clipboard.writeText(location.href);
     const btn = $('#copyLinkBtn');
     const txt = btn.textContent;
-    btn.textContent = 'Gekopieerd!';
+    btn.textContent = 'Copied!';
     setTimeout(()=> btn.textContent = txt, 1200);
   }catch(_){}
 });

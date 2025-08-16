@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark">
+  <title>Boek Reader</title>
+  <link rel="preload" href="assets/styles.css" as="style">
+  <link rel="stylesheet" href="assets/styles.css">
+  <!-- Optioneel: snelle Markdown parser via CDN. App heeft ook fallback. -->
+  <script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script defer src="assets/app.js"></script>
+</head>
+<body>
+  <header class="hdr">
+    <div class="bar">
+      <button class="nav-btn" data-link="#/" aria-label="Home">🏠</button>
+      <div class="brand">
+        <span class="logo">🌹</span>
+        <strong>Babyreader</strong>
+        <span class="pill" id="currentBookPill" hidden></span>
+      </div>
+      <div class="actions">
+  <button class="nav-btn" data-link="#/books" aria-label="Boeken">📚</button>
+  <button class="nav-btn" id="tocBtn" aria-label="Inhoudsopgave">☰</button>
+  <button class="nav-btn primary" data-link="#/goto" aria-label="Ga naar">➜</button>
+</div>
+    </div>
+  </header>
+
+  <main id="app" class="safe"></main>
+
+  <footer class="ftr safe">
+    <button class="btn ghost" id="copyLinkBtn" title="Kopieer deelbare link">🔗 Kopieer link</button>
+    <small class="muted">Laurens van der Drift</small>
+  </footer>
+</body>
+</html>

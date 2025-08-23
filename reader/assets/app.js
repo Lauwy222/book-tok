@@ -5,6 +5,8 @@
    Books list via /books.json (root)
    + Prev/Next buttons
    + Images & links with relative paths are fixed to absolute
+   + Colored toasts
+   + Optional password protection (global and/or per-book)
    =========================================================== */
 
 const $ = s => document.querySelector(s);
@@ -12,6 +14,24 @@ const app = $('#app');
 const pill = $('#currentBookPill');
 
 const cache = new Map();
+
+/* -------- Toasts -------- */
+function toast(msg, type='info', timeout=3000){
+  const stack = $('#toastStack');
+  if (!stack) return console.log(`[toast:${type}]`, msg);
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  const icon = type==='success' ? '✅' : type==='warn' ? '⚠️' : type==='error' ? '⛔' : 'ℹ️';
+  el.innerHTML = `
+    <div class="icon">${icon}</div>
+    <div class="msg">${msg}</div>
+    <button class="close" aria-label="Close">×</button>
+  `;
+  stack.appendChild(el);
+  const rm = ()=> el.remove();
+  el.querySelector('.close').addEventListener('click', rm);
+  if (timeout > 0) setTimeout(rm, timeout);
+}
 
 /* -------- Helpers -------- */
 function setHTML(el, html){ el.innerHTML = html; }
@@ -75,6 +95,152 @@ function fixRelativeUrls(container, baseDir){
     a.setAttribute('href', toAbsoluteUrl(baseDir, orig));
     a.setAttribute('rel','noopener');
   });
+}
+
+/* -------- Password protection (client-side) --------
+   books.json can contain:
+   {
+     "appPassSha256": "<hex sha256 of the global pass>",   // optional
+     "books": [
+        { "id":"my-book", "title":"My Book", "passSha256":"<hex>" }, // optional per book
+        "unlocked-book"
+     ]
+   }
+   or simply an array (["my-book", {"id":"other","passSha256":"<hex>"}])
+----------------------------------------------------- */
+let booksConfigCache = null;
+
+async function sha256Hex(str){
+  const bytes = new TextEncoder().encode(str);
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function getBooksConfig(){
+  if (booksConfigCache) return booksConfigCache;
+  let data;
+  try{
+    const txt = await fetchText('/books.json');
+    data = JSON.parse(txt);
+  }catch(_){
+    // No books.json? Still allow reading if user hits a direct URL.
+    data = [];
+  }
+
+  let list = [];
+  let appPassSha256 = null;
+
+  if (Array.isArray(data)){
+    list = data.map(x => typeof x === 'string'
+      ? { id:x, title:x, passSha256:null }
+      : { id:x.id, title:x.title || x.id, passSha256:x.passSha256 || null }
+    ).filter(b=>b.id);
+  }else if (data && typeof data === 'object'){
+    if (typeof data.appPassSha256 === 'string' && data.appPassSha256.length){
+      appPassSha256 = data.appPassSha256.toLowerCase();
+    }
+    const src = Array.isArray(data.books) ? data.books : [];
+    list = src.map(x => typeof x === 'string'
+      ? { id:x, title:x, passSha256:null }
+      : { id:x.id, title:x.title || x.id, passSha256:x.passSha256 || null }
+    ).filter(b=>b.id);
+  }
+
+  const byId = Object.fromEntries(list.map(b => [b.id, b]));
+  booksConfigCache = { list, byId, appPassSha256 };
+  return booksConfigCache;
+}
+
+function sessionHasGlobalAuth(){ return sessionStorage.getItem('auth:global') === 'true'; }
+function setGlobalAuth(){ sessionStorage.setItem('auth:global','true'); }
+function sessionHasBookAuth(bookId){ return sessionStorage.getItem('auth:book:'+bookId) === 'true'; }
+function setBookAuth(bookId){ sessionStorage.setItem('auth:book:'+bookId, 'true'); }
+
+/* Show password modal and resolve with {ok:true, value} or {ok:false} */
+function askPassword({title='Enter password', placeholder='Password', submitLabel='Unlock'} = {}){
+  return new Promise(resolve=>{
+    const root = $('#modalRoot');
+    if (!root) return resolve({ok:false});
+
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-backdrop';
+    wrap.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+        <h2>${escapeHtml(title)}</h2>
+        <span class="muted">This content is protected. Please enter the password.</span>
+        <div class="row">
+          <input id="passField" type="password" placeholder="${escapeHtml(placeholder)}" autocomplete="current-password">
+          <button class="eye" id="toggleEye" aria-label="Show/Hide">👁️</button>
+        </div>
+        <div class="btns">
+          <button class="btn" id="cancelBtn">Cancel</button>
+          <button class="btn primary" id="okBtn">${escapeHtml(submitLabel)}</button>
+        </div>
+      </div>
+    `;
+    root.appendChild(wrap);
+
+    const field = wrap.querySelector('#passField');
+    const toggle = wrap.querySelector('#toggleEye');
+    const ok = wrap.querySelector('#okBtn');
+    const cancel = wrap.querySelector('#cancelBtn');
+
+    const close = (result)=>{ wrap.remove(); resolve(result); };
+
+    toggle.addEventListener('click', ()=>{
+      const t = field.getAttribute('type') === 'password' ? 'text' : 'password';
+      field.setAttribute('type', t);
+    });
+    cancel.addEventListener('click', ()=> close({ok:false}));
+    ok.addEventListener('click', ()=>{
+      const val = field.value || '';
+      close({ok:true, value:val});
+    });
+    field.addEventListener('keydown', (e)=>{
+      if (e.key === 'Enter') ok.click();
+      if (e.key === 'Escape') cancel.click();
+    });
+
+    field.focus();
+  });
+}
+
+/* Enforce auth:
+   - If global pass exists and not yet unlocked -> prompt.
+   - If per-book pass exists and not yet unlocked -> prompt.
+   Returns true if authorized, else false. */
+async function ensureAuthorized(route){
+  const cfg = await getBooksConfig();
+
+  // Global gate (protect Books, TOC, Reader; leave Home/Goto open)
+  if (cfg.appPassSha256 && !sessionHasGlobalAuth()){
+    const res = await askPassword({ title:'Enter app password' });
+    if (!res.ok) { toast('Access cancelled.', 'warn'); return false; }
+    const hash = await sha256Hex(res.value);
+    if (hash !== cfg.appPassSha256){
+      toast('Wrong password.', 'error');
+      return false;
+    }
+    setGlobalAuth();
+    toast('App unlocked.', 'success');
+  }
+
+  // Per-book gate (TOC/Reader only)
+  const bookId = route.book;
+  if (bookId && cfg.byId[bookId] && cfg.byId[bookId].passSha256){
+    if (!sessionHasBookAuth(bookId)){
+      const res = await askPassword({ title:`Enter password for “${bookId}”` });
+      if (!res.ok) { toast('Access cancelled.', 'warn'); return false; }
+      const hash = await sha256Hex(res.value);
+      if (hash !== cfg.byId[bookId].passSha256.toLowerCase()){
+        toast('Wrong password for this book.', 'error');
+        return false;
+      }
+      setBookAuth(bookId);
+      toast(`Unlocked ${bookId}.`, 'success');
+    }
+  }
+
+  return true;
 }
 
 /* -------- TOC helpers -------- */
@@ -159,6 +325,7 @@ function viewHome(){
     const lastBook = localStorage.getItem('lastBook');
     const lastChapter = localStorage.getItem('lastChapter');
     if (lastBook && lastChapter) location.hash = `#/${encodeURIComponent(lastBook)}/chapter/${encodeURIComponent(lastChapter)}`;
+    else toast('No last read page found.', 'info');
   });
 }
 
@@ -167,9 +334,7 @@ async function viewReader(book, chapterRaw){
   const chapter = ensureMd(sanitizeSegment(chapterRaw));
   setBookPill(bookSafe);
 
-  // Chapter base dir (for relative paths)
   const chapterDir = `/${bookSafe}/` + (chapter.includes('/') ? `chapter/${chapter.split('/').slice(0, -1).join('/')}` : 'chapter');
-
   const path = `/${bookSafe}/chapter/${chapter}`;
   setHTML(app, `
     <article class="card">
@@ -188,7 +353,6 @@ async function viewReader(book, chapterRaw){
     </article>
   `);
 
-  // content
   try{
     const md = await fetchText(path);
     const html = renderMarkdown(md);
@@ -203,9 +367,9 @@ async function viewReader(book, chapterRaw){
         <strong>Could not load the chapter.</strong><br>${escapeHtml(e.message)}<br><br>
         Check path and filename.
       </div>`;
+    toast('Failed to load chapter.', 'error');
   }
 
-  // pager
   try{
     const toc = await loadTocArray(bookSafe);
     const pagerEl = $('#pager');
@@ -233,17 +397,22 @@ async function viewReader(book, chapterRaw){
       </div>
     `;
 
-    // Keyboard shortcuts: arrows or p/n
-    document.onkeydown = (e)=>{
+    // Keyboard shortcuts for reader
+    function readerKeyHandler(e){
       const key = e.key.toLowerCase();
-      if (key === 'arrowright' || key === 'n'){
-        if (nextHref){ location.hash = nextHref.replace(/^#/, ''); }
-      }else if (key === 'arrowleft' || key === 'p'){
-        if (prevHref){ location.hash = prevHref.replace(/^#/, ''); }
+      if ((key === 'arrowright' || key === 'n') && nextHref){
+        location.hash = nextHref.slice(1);
+      }else if ((key === 'arrowleft' || key === 'p') && prevHref){
+        location.hash = prevHref.slice(1);
       }
-    };
+    }
+    document.addEventListener('keydown', readerKeyHandler);
+    window.addEventListener('hashchange', function once(){
+      document.removeEventListener('keydown', readerKeyHandler);
+      window.removeEventListener('hashchange', once);
+    }, { once:true });
   }catch(_){
-    // silently ignore
+    // ignore
   }
 }
 
@@ -267,6 +436,7 @@ async function viewToc(book){
     zone.innerHTML = html;
   }catch(e){
     zone.innerHTML = `<div class="status error">${escapeHtml(e.message)}</div>`;
+    toast('Failed to load TOC.', 'error');
   }
 }
 
@@ -284,36 +454,16 @@ async function viewBooks(){
   `);
 
   const zone = $('#booksZone');
-
-  let list;
-  try{
-    const txt = await fetchText(`/books.json`);
-    const data = JSON.parse(txt);
-    if (Array.isArray(data)){
-      list = data.map(x => typeof x === 'string' ? { id: x, title: x } : { id: x.id, title: x.title || x.id }).filter(b => b.id);
-    }else if (Array.isArray(data.books)){
-      list = data.books.map(x => typeof x === 'string' ? { id: x, title: x } : { id: x.id, title: x.title || x.id }).filter(b => b.id);
-    }else{
-      throw new Error('Invalid format: use an array or an object with "books": [].');
-    }
-  }catch(e){
-    zone.innerHTML = `
-      <div class="status error">
-        Could not load <code>/books.json</code>.<br>${escapeHtml(e.message)}<br><br>
-        Example:<pre><code>[
-  "my-book",
-  { "id": "another-book", "title": "Another Book" }
-]</code></pre>
-      </div>`;
-    return;
-  }
+  const cfg = await getBooksConfig();
+  const list = cfg.list;
 
   if (!list.length){
     zone.innerHTML = `<div class="status">No books found in <code>books.json</code>.</div>`;
     return;
   }
 
-  zone.innerHTML = list.map(b=> bookRowHtml(b.id, b.title)).join('');
+  // Add a lock indicator for protected books
+  zone.innerHTML = list.map(b=> bookRowHtml(b.id, b.title, !!b.passSha256)).join('');
 
   zone.addEventListener('click', async (e)=>{
     const row = e.target.closest('[data-bookrow]');
@@ -343,15 +493,16 @@ async function viewBooks(){
   });
 }
 
-function bookRowHtml(id, title){
+function bookRowHtml(id, title, locked=false){
   const safeId = escapeHtml(id);
   const safeTitle = escapeHtml(title || id);
+  const lock = locked ? ' 🔒' : '';
   return `
   <div class="card" data-bookrow="${safeId}" aria-expanded="false" style="overflow:hidden">
     <div class="pad" style="display:flex; align-items:center; justify-content:space-between; gap:10px; border-bottom:1px solid var(--border); cursor:pointer">
       <div style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
         <span class="caret" aria-hidden="true">▶</span>
-        <strong style="margin-left:.4rem">${safeTitle}</strong>
+        <strong style="margin-left:.4rem">${safeTitle}${lock}</strong>
         <span class="muted" style="margin-left:.5rem">(${safeId})</span>
       </div>
       <a class="btn" href="#/toc/${encodeURIComponent(safeId)}" onclick="event.stopPropagation()">TOC</a>
@@ -427,6 +578,13 @@ function parseHash(){
 
 async function render(){
   const r = parseHash();
+
+  // Require auth before entering protected routes
+  if (r.page === 'books' || r.page === 'toc' || r.page === 'reader'){
+    const ok = await ensureAuthorized(r);
+    if (!ok){ viewHome(); return; }
+  }
+
   if (r.page === 'home') return viewHome();
   if (r.page === 'books') return viewBooks();
   if (r.page === 'goto') return viewGoto();
@@ -443,23 +601,14 @@ document.addEventListener('click', (e)=>{
   const btn = e.target.closest('[data-link]');
   if (btn){ location.hash = btn.getAttribute('data-link'); }
 });
-$('#tocBtn')?.addEventListener('click', ()=>{
-  const last = localStorage.getItem('lastBook') || '';
-  location.hash = last ? `#/toc/${encodeURIComponent(last)}` : '#/goto';
-});
-document.addEventListener('keydown', (e)=>{
-  if (e.key.toLowerCase() === 'g') location.hash = '#/goto';
-});
-
-$('#copyLinkBtn')?.addEventListener('click', async ()=>{
-  try{
-    await navigator.clipboard.writeText(location.href);
-    const btn = $('#copyLinkBtn');
-    const txt = btn.textContent;
-    btn.textContent = 'Gekopieerd!';
-    setTimeout(()=> btn.textContent = txt, 1200);
-  }catch(_){}
-});
+const tocBtn = document.querySelector('#tocBtn');
+if (tocBtn){
+  tocBtn.addEventListener('click', ()=>{
+    const last = localStorage.getItem('lastBook') || '';
+    location.hash = last ? `#/toc/${encodeURIComponent(last)}` : '#/goto';
+  });
+}
+// Single 'g' shortcut to open Go-to
 document.addEventListener('keydown', (e)=>{
   if (e.key.toLowerCase() === 'g') location.hash = '#/goto';
 });

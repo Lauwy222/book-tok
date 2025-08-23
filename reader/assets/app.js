@@ -226,7 +226,7 @@ async function viewReader(book, chapterRaw){
         <a class="btn" ${prevHref ? `href="${prevHref}"` : 'disabled'} aria-label="Previous chapter">← Previous</a>
       </div>
       <div class="muted" style="text-align:center; flex:1">
-        ${idx >= 0 ? `Chapter ${idx+1} / ${toc.length}` : 'Unknown position'}
+        ${idx >= 0 ? `Page ${idx+1} / ${toc.length}` : 'Unknown position'}
       </div>
       <div class="side">
         <a class="btn" ${nextHref ? `href="${nextHref}"` : 'disabled'} aria-label="Next chapter">Next →</a>

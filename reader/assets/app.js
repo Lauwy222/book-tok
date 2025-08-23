@@ -1,9 +1,10 @@
 /* ===========================================================
-   Boek Reader – mobiel-first, dark mode
-   Structuur: /<boeknaam>/chapter/<hoofdstuk>.md
-   TOC: /<boeknaam>/toc.json of /<boeknaam>/toc.md
-   Boekenoverzicht via /books.json (root)
-   + Next/Prev knoppen in de reader
+   Book Reader – mobile-first, dark mode
+   Structure: /<book>/chapter/<chapter>.md
+   TOC: /<book>/toc.json or /<book>/toc.md
+   Books list via /books.json (root)
+   + Prev/Next buttons
+   + Images & links with relative paths are fixed to absolute
    =========================================================== */
 
 const $ = s => document.querySelector(s);
@@ -33,7 +34,7 @@ function sanitizeSegment(seg){
 function ensureMd(name){ return name?.toLowerCase().endsWith('.md') ? name : `${name}.md`; }
 function chapterKey(name){ return ensureMd(sanitizeSegment(name||'')).toLowerCase(); }
 function showStatus(msg, kind='info'){ setHTML(app, `<div class="card pad status ${kind==='error'?'error':''}">${msg}</div>`); }
-function setBookPill(book){ if(book){ pill.hidden=false; pill.textContent=`Boek: ${book}` } else pill.hidden=true; }
+function setBookPill(book){ if(book){ pill.hidden=false; pill.textContent=`Book: ${book}` } else pill.hidden=true; }
 
 async function fetchText(path){
   if (cache.has(path)) return cache.get(path);
@@ -44,21 +45,53 @@ async function fetchText(path){
   return txt;
 }
 
-/* -------- TOC helpers (array) -------- */
+/* -------- URL utilities (images/links) -------- */
+function normalizePath(path){
+  const parts = path.split('/').filter(Boolean);
+  const stack = [];
+  for (const p of parts){
+    if (p === '.') continue;
+    if (p === '..') { stack.pop(); continue; }
+    stack.push(p);
+  }
+  return '/' + stack.join('/');
+}
+function toAbsoluteUrl(baseDir, url){
+  if (!url) return url;
+  if (/^https?:\/\//i.test(url) || url.startsWith('data:') || url.startsWith('blob:')) return url;
+  if (url.startsWith('/')) return url;
+  return normalizePath(baseDir + '/' + url);
+}
+function fixRelativeUrls(container, baseDir){
+  container.querySelectorAll('img[src]').forEach(img=>{
+    const orig = img.getAttribute('src') || '';
+    img.setAttribute('src', toAbsoluteUrl(baseDir, orig));
+    img.setAttribute('loading','lazy');
+    img.setAttribute('decoding','async');
+  });
+  container.querySelectorAll('a[href]').forEach(a=>{
+    const orig = a.getAttribute('href') || '';
+    if (/^(#|mailto:|tel:|javascript:)/i.test(orig)) return;
+    a.setAttribute('href', toAbsoluteUrl(baseDir, orig));
+    a.setAttribute('rel','noopener');
+  });
+}
+
+/* -------- TOC helpers -------- */
 async function loadTocArray(bookId){
   const safe = sanitizeSegment(bookId);
 
-  // 1) Probeer JSON
+  // JSON
   try{
     const jsonText = await fetchText(`/${safe}/toc.json`);
     const toc = JSON.parse(jsonText);
-    if (!Array.isArray(toc)) throw new Error('toc.json is geen array');
+    if (!Array.isArray(toc)) throw new Error('toc.json is not an array');
     return toc
-      .map(it => ({ title: it.title || it.chapter || 'Hoofdstuk', chapter: ensureMd(sanitizeSegment(it.chapter || '')) }))
+      .map(it => ({ title: it.title || it.chapter || 'Chapter', chapter: ensureMd(sanitizeSegment(it.chapter || '')) }))
       .filter(it => it.chapter);
   }catch(_){}
 
-  // 2) Probeer Markdown TOC (very basic parser: [Titel](chapter.md))
+  // Markdown TOC: parse [Title](chapter.md)
   try{
     const md = await fetchText(`/${safe}/toc.md`);
     const links = [...md.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)];
@@ -69,23 +102,31 @@ async function loadTocArray(bookId){
     }));
   }catch(_){}
 
-  // 3) Geen TOC
   return null;
 }
 
 /* -------- Markdown rendering (fallback) -------- */
 function basicMarkdown(md){
   let html = (md||'').replace(/\r\n?/g, '\n');
+  // code blocks
   html = html.replace(/```([\s\S]*?)```/g, (_,code)=> `<pre><code>${escapeHtml(code)}</code></pre>`);
+  // images
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m,alt,src)=> `<img alt="${escapeHtml(alt)}" src="${escapeHtml(src)}">`);
+  // headings
   html = html.replace(/^### (.*)$/gm, '<h3>$1</h3>')
              .replace(/^## (.*)$/gm, '<h2>$1</h2>')
              .replace(/^# (.*)$/gm, '<h1>$1</h1>');
+  // inline code
   html = html.replace(/`([^`]+?)`/g, '<code>$1</code>');
+  // bold/italic
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
              .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  // links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // lists
   html = html.replace(/(?:^|\n)- (.*)(?=\n|$)/g, (_,item)=> `\n<li>${item}</li>`)
              .replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
+  // paragraphs
   html = html.replace(/(?:^|\n)([^<\n][^\n]+)(?=\n|$)/g, '<p>$1</p>');
   return html;
 }
@@ -101,14 +142,16 @@ function viewHome(){
   setBookPill(null);
   setHTML(app, `
     <section class="card pad">
-      <h1>Hey my love 🌹</h1>
-      <p class="muted">Hey baby, I wrote this app specially for you. You told me you liked dark romance, so I will write them for you.</p>
+      <h1>Welcome 👋</h1>
+      <p class="muted">
+        This app reads chapters from <code>/<em>book</em>/chapter/<em>chapter</em>.md</code> and displays them in dark mode.
+      </p>
       <div class="grid">
         <div class="grid" style="grid-template-columns:1fr 1fr; gap:8px">
           <a class="btn" href="#/books">📚 Books</a>
-          <a class="btn" href="#/goto">➜ Go-to</a>
+          <a class="btn" href="#/goto">➜ Go to</a>
         </div>
-        <button class="btn" id="openLastBtn">Open laatst gelezen</button>
+        <button class="btn" id="openLastBtn">Open last read</button>
       </div>
     </section>
   `);
@@ -124,44 +167,50 @@ async function viewReader(book, chapterRaw){
   const chapter = ensureMd(sanitizeSegment(chapterRaw));
   setBookPill(bookSafe);
 
+  // Chapter base dir (for relative paths)
+  const chapterDir = `/${bookSafe}/` + (chapter.includes('/') ? `chapter/${chapter.split('/').slice(0, -1).join('/')}` : 'chapter');
+
   const path = `/${bookSafe}/chapter/${chapter}`;
   setHTML(app, `
     <article class="card">
       <div class="pad" style="display:flex; gap:10px; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border)">
         <div style="min-width:0">
-          <div class="muted">Lezen uit</div>
-          <h2 style="margin:.2rem 0 0; word-break:break-all"><code>/${bookSafe}/chapter/${chapter}</code></h2>
+          <div class="muted">Reading from</div>
+          <h2 style="margin:.2rem 0 0; word-break:break-all"><code>${path}</code></h2>
         </div>
         <div style="display:flex; gap:8px">
-          <a class="btn" href="#/toc/${encodeURIComponent(bookSafe)}" aria-label="Inhoudsopgave">TOC</a>
-          <a class="btn" href="#/goto" aria-label="Ga naar">Go-to</a>
+          <a class="btn" href="#/toc/${encodeURIComponent(bookSafe)}" aria-label="Table of Contents">TOC</a>
+          <a class="btn" href="#/goto" aria-label="Go to">Go to</a>
         </div>
       </div>
-      <div class="reader" id="reader"><span class="loader"></span> Laden…</div>
+      <div class="reader" id="reader"><span class="loader"></span> Loading…</div>
       <div id="pager" class="pad pager" aria-live="polite"></div>
     </article>
   `);
 
-  // 1) Laad content
+  // content
   try{
     const md = await fetchText(path);
-    $('#reader').innerHTML = renderMarkdown(md);
+    const html = renderMarkdown(md);
+    $('#reader').innerHTML = html;
+    fixRelativeUrls($('#reader'), chapterDir);
+
     localStorage.setItem('lastBook', bookSafe);
     localStorage.setItem('lastChapter', chapter);
   }catch(e){
     $('#reader').innerHTML = `
       <div class="status error">
-        <strong>Kon het hoofdstuk niet laden.</strong><br>${escapeHtml(e.message)}<br><br>
-        Controleer pad en bestandsnaam.
+        <strong>Could not load the chapter.</strong><br>${escapeHtml(e.message)}<br><br>
+        Check path and filename.
       </div>`;
   }
 
-  // 2) Laad TOC en bouw pager
+  // pager
   try{
     const toc = await loadTocArray(bookSafe);
     const pagerEl = $('#pager');
     if (!toc || !toc.length){
-      pagerEl.innerHTML = `<div class="status">Geen TOC gevonden voor pager.</div>`;
+      pagerEl.innerHTML = `<div class="status">No TOC found for pager.</div>`;
       return;
     }
 
@@ -174,17 +223,17 @@ async function viewReader(book, chapterRaw){
 
     pagerEl.innerHTML = `
       <div class="side">
-        <a class="btn" ${prevHref ? `href="${prevHref}"` : 'disabled'} aria-label="Vorig hoofdstuk">← Vorig</a>
+        <a class="btn" ${prevHref ? `href="${prevHref}"` : 'disabled'} aria-label="Previous chapter">← Previous</a>
       </div>
       <div class="muted" style="text-align:center; flex:1">
-        ${idx >= 0 ? `Hoofdstuk ${idx+1} / ${toc.length}` : 'Onbekende positie'}
+        ${idx >= 0 ? `Chapter ${idx+1} / ${toc.length}` : 'Unknown position'}
       </div>
       <div class="side">
-        <a class="btn" ${nextHref ? `href="${nextHref}"` : 'disabled'} aria-label="Volgend hoofdstuk">Volgend →</a>
+        <a class="btn" ${nextHref ? `href="${nextHref}"` : 'disabled'} aria-label="Next chapter">Next →</a>
       </div>
     `;
 
-    // Keyboard: p/n of pijltjes
+    // Keyboard shortcuts: arrows or p/n
     document.onkeydown = (e)=>{
       const key = e.key.toLowerCase();
       if (key === 'arrowright' || key === 'n'){
@@ -194,7 +243,7 @@ async function viewReader(book, chapterRaw){
       }
     };
   }catch(_){
-    // stil falen: geen pager
+    // silently ignore
   }
 }
 
@@ -203,10 +252,10 @@ async function viewToc(book){
   setBookPill(bookSafe);
   setHTML(app, `
     <section class="card pad">
-      <h1>Inhoudsopgave</h1>
-      <p class="muted">Zoekt automatisch <code>/${bookSafe}/toc.json</code> of <code>/${bookSafe}/toc.md</code>.</p>
+      <h1>Table of Contents</h1>
+      <p class="muted">Automatically looks for <code>/${bookSafe}/toc.json</code> or <code>/${bookSafe}/toc.md</code>.</p>
       <div id="tocZone" class="grid" style="gap:12px">
-        <div class="status"><span class="loader"></span> Inhoudsopgave laden…</div>
+        <div class="status"><span class="loader"></span> Loading TOC…</div>
       </div>
     </section>
   `);
@@ -221,15 +270,15 @@ async function viewToc(book){
   }
 }
 
-/* ===== Boekenoverzicht ===== */
+/* ===== Books view ===== */
 async function viewBooks(){
   setBookPill(null);
   setHTML(app, `
     <section class="card pad">
       <h1>Books</h1>
-      <p class="muted">Path: <code>/books.json</code>. Click to open a book</p>
+      <p class="muted">Read from <code>/books.json</code>. Tap a book to reveal its chapters.</p>
       <div id="booksZone" class="grid" style="gap:10px">
-        <div class="status"><span class="loader"></span> Loading books...</div>
+        <div class="status"><span class="loader"></span> Loading books…</div>
       </div>
     </section>
   `);
@@ -245,22 +294,22 @@ async function viewBooks(){
     }else if (Array.isArray(data.books)){
       list = data.books.map(x => typeof x === 'string' ? { id: x, title: x } : { id: x.id, title: x.title || x.id }).filter(b => b.id);
     }else{
-      throw new Error('Onjuist formaat: gebruik een array of een object met "books": [].');
+      throw new Error('Invalid format: use an array or an object with "books": [].');
     }
   }catch(e){
     zone.innerHTML = `
       <div class="status error">
-        Kon <code>/books.json</code> niet laden.<br>${escapeHtml(e.message)}<br><br>
-        Voorbeeld:<pre><code>[
-  "mijn-boek",
-  { "id": "ander-boek", "title": "Ander Boek" }
+        Could not load <code>/books.json</code>.<br>${escapeHtml(e.message)}<br><br>
+        Example:<pre><code>[
+  "my-book",
+  { "id": "another-book", "title": "Another Book" }
 ]</code></pre>
       </div>`;
     return;
   }
 
   if (!list.length){
-    zone.innerHTML = `<div class="status">Geen boeken in <code>books.json</code> gevonden.</div>`;
+    zone.innerHTML = `<div class="status">No books found in <code>books.json</code>.</div>`;
     return;
   }
 
@@ -284,7 +333,7 @@ async function viewBooks(){
 
     row.setAttribute('aria-expanded','true');
     caret.textContent = '▼';
-    body.innerHTML = `<div class="status"><span class="loader"></span> Hoofdstukken laden…</div>`;
+    body.innerHTML = `<div class="status"><span class="loader"></span> Loading chapters…</div>`;
     try{
       const html = await loadBookTocHtml(book);
       body.innerHTML = html;
@@ -311,21 +360,21 @@ function bookRowHtml(id, title){
   </div>`;
 }
 
-/* Maak klikbare hoofdstuklijst voor een boek */
+/* Build clickable chapter list for a book */
 async function loadBookTocHtml(bookId){
   const toc = await loadTocArray(bookId);
   const safe = sanitizeSegment(bookId);
-  if (!toc) throw new Error(`Geen <code>${safe}/toc.json</code> of <code>${safe}/toc.md</code> gevonden. Voeg er één toe om hoofdstukken te tonen.`);
+  if (!toc) throw new Error(`No <code>${safe}/toc.json</code> or <code>${safe}/toc.md</code> found. Add one to show chapters.`);
 
   const items = toc.map(item=>{
-    const title = escapeHtml(item.title || item.chapter || 'Hoofdstuk');
+    const title = escapeHtml(item.title || item.chapter || 'Chapter');
     const ch = ensureMd(sanitizeSegment(item.chapter || ''));
     const href = `#/${encodeURIComponent(safe)}/chapter/${encodeURIComponent(ch)}`;
     return `<li style="padding:.55rem .7rem; border-top:1px solid var(--border)">
       <a href="${href}">${title}</a> <span class="muted">(${ch})</span>
     </li>`;
   }).join('');
-  return `<ul style="list-style:none; margin:0; padding:0">${items || '<li class="muted" style="padding:.55rem .7rem">Leeg</li>'}</ul>`;
+  return `<ul style="list-style:none; margin:0; padding:0">${items || '<li class="muted" style="padding:.55rem .7rem">Empty</li>'}</ul>`;
 }
 
 /* -------- Go-to -------- */
@@ -334,19 +383,19 @@ function viewGoto(){
   setBookPill(last || null);
   setHTML(app, `
     <section class="card pad">
-      <h1>Ga naar</h1>
+      <h1>Go to</h1>
       <form id="gotoForm" class="grid" style="gap:12px">
         <div class="field">
-          <label style="min-width:92px">Boek</label>
-          <input id="bookInput" placeholder="bv. mijn-boek" value="${escapeHtml(last)}" required inputmode="latin-name" autocomplete="off">
+          <label style="min-width:92px">Book</label>
+          <input id="bookInput" placeholder="e.g. my-book" value="${escapeHtml(last)}" required inputmode="latin-name" autocomplete="off">
         </div>
         <div class="field">
-          <label style="min-width:92px">Hoofdstuk</label>
-          <input id="chapterInput" placeholder="bv. intro.md of hoofdstuk-1" required inputmode="latin-name" autocomplete="off">
+          <label style="min-width:92px">Chapter</label>
+          <input id="chapterInput" placeholder="e.g. intro.md or chapter-1" required inputmode="latin-name" autocomplete="off">
         </div>
         <div class="grid" style="grid-template-columns:1fr 1fr; gap:8px">
-          <button class="btn" type="button" id="tocLinkBtn">Toon TOC</button>
-          <button class="btn" type="submit">Openen</button>
+          <button class="btn" type="button" id="tocLinkBtn">Show TOC</button>
+          <button class="btn" type="submit">Open</button>
         </div>
       </form>
     </section>
@@ -389,7 +438,7 @@ async function render(){
 window.addEventListener('hashchange', render);
 document.addEventListener('DOMContentLoaded', render);
 
-/* -------- Extra UX -------- */
+/* -------- Extras -------- */
 document.addEventListener('click', (e)=>{
   const btn = e.target.closest('[data-link]');
   if (btn){ location.hash = btn.getAttribute('data-link'); }
@@ -398,12 +447,16 @@ $('#tocBtn')?.addEventListener('click', ()=>{
   const last = localStorage.getItem('lastBook') || '';
   location.hash = last ? `#/toc/${encodeURIComponent(last)}` : '#/goto';
 });
+document.addEventListener('keydown', (e)=>{
+  if (e.key.toLowerCase() === 'g') location.hash = '#/goto';
+});
+
 $('#copyLinkBtn')?.addEventListener('click', async ()=>{
   try{
     await navigator.clipboard.writeText(location.href);
     const btn = $('#copyLinkBtn');
     const txt = btn.textContent;
-    btn.textContent = 'Copied!';
+    btn.textContent = 'Gekopieerd!';
     setTimeout(()=> btn.textContent = txt, 1200);
   }catch(_){}
 });

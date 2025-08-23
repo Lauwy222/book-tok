@@ -1,0 +1,5 @@
+(async (pw)=>{
+  const enc = new TextEncoder().encode(pw);
+  const h = await crypto.subtle.digest('SHA-256', enc);
+  console.log(Array.from(new Uint8Array(h)).map(b=>b.toString(16).padStart(2,'0')).join(''));
+})('ENTERPASSWORD');
